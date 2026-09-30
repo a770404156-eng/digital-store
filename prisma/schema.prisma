@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// One row per client deployment. Even though each client gets their own
+// hosted instance for now, keeping storeId on every table means a future
+// move to a single shared multi-tenant deployment is a migration, not a rewrite.
+// ---------------------------------------------------------------------------
+model Store {
+  id           String   @id @default(cuid())
+  name         String
+  logoUrl      String?
+  primaryColor String? // hex, used to theme the storefront
+  phone        String?
+  whatsapp     String?
+  wilaya       String? // default shipping origin, shown to customers
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  categories  Category[]
+  brands      Brand[]
+  conditions  Condition[]
+  products    Product[]
+  orders      Order[]
+}
+
+// ---------------------------------------------------------------------------
+// Category / Brand / Condition
+// All three follow the same shape on purpose: small lists the store owner
+// manages themselves (add / rename / soft-delete). They double as both the
+// values shown on the product form and the options in the storefront filters.
+// ---------------------------------------------------------------------------
+model Category {
+  id       String  @id @default(cuid())
+  storeId  String
+  store    Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  name     String
+  slug     String
+  isActive Boolean @default(true)
+
+  products Product[]
+
+  @@unique([storeId, slug])
+  @@index([storeId])
+}
+
+model Brand {
+  id       String  @id @default(cuid())
+  storeId  String
+  store    Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  name     String
+  slug     String
+  logoUrl  String?
+  isActive Boolean @default(true)
+
+  products Product[]
+
+  @@unique([storeId, slug])
+  @@index([storeId])
+}
+
+model Condition {
+  id       String  @id @default(cuid())
+  storeId  String
+  store    Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  name     String // e.g. "New", "Used", "Refurbished" — seeded per store, editable after
+  isActive Boolean @default(true)
+
+  products Product[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+}
+
+// ---------------------------------------------------------------------------
+// Product
+// `specs` is intentionally freeform: [{ label: "RAM", value: "16GB" }, ...]
+// The owner types both the label and value — no per-category schema. This
+// trades structured spec filtering for the flexibility a mixed catalog
+// (laptops, used phones, chargers, earphones) actually needs.
+// ---------------------------------------------------------------------------
+model Product {
+  id             String   @id @default(cuid())
+  storeId        String
+  store          Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  categoryId     String
+  category       Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  brandId        String?
+  brand          Brand?   @relation(fields: [brandId], references: [id], onDelete: Restrict)
+  conditionId    String
+  condition      Condition @relation(fields: [conditionId], references: [id], onDelete: Restrict)
+
+  name           String
+  slug           String
+  description    String?
+  price          Decimal  @db.Decimal(10, 2)
+  discountPrice  Decimal? @db.Decimal(10, 2) // set + less than price => shows on /discounts automatically
+  stock          Int      @default(0)
+  specs          Json     @default("[]") // [{ label, value }]
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  images     ProductImage[]
+  orderItems OrderItem[]
+
+  @@unique([storeId, slug])
+  @@index([storeId])
+  @@index([storeId, categoryId])
+  @@index([storeId, brandId])
+  @@index([storeId, conditionId])
+}
+
+model ProductImage {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  sortOrder Int     @default(0)
+
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Order / OrderItem
+// OrderItem snapshots productName + priceAtOrder so an order stays accurate
+// even if the product is later renamed, re-priced, or removed. productId is
+// nullable with onDelete: SetNull for the same reason: a hard-deleted
+// product should never be able to break order history.
+// ---------------------------------------------------------------------------
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model Order {
+  id           String      @id @default(cuid())
+  storeId      String
+  store        Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customerName String
+  phone        String
+  wilaya       String
+  address      String?
+  status       OrderStatus @default(PENDING)
+  totalPrice   Decimal     @db.Decimal(10, 2)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  items OrderItem[]
+
+  @@index([storeId])
+  @@index([storeId, status])
+}
+
+model OrderItem {
+  id            String   @id @default(cuid())
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId     String?
+  product       Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productName   String // snapshot, survives product rename/delete
+  quantity      Int
+  priceAtOrder  Decimal  @db.Decimal(10, 2) // snapshot, survives price changes
+
+  @@index([orderId])
+}
